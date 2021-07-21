@@ -42,12 +42,159 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "libtorrent/aux_/numeric_cast.hpp"
 #include "libtorrent/torrent.hpp" // for default_piece_priority
 #include "libtorrent/aux_/numeric_cast.hpp" // for clamp
+#include "libtorrent/aux_/merkle.hpp" // for merkle_
 
 namespace libtorrent {
 
-	entry write_resume_data(add_torrent_params const& atp)
+namespace {
+	using write_resume_flags = flags::bitfield_flag<std::uint32_t, struct write_resume_flags_tag>;
+
+	// only writes fields to create a .torrent file, no other resume data
+	constexpr write_resume_flags write_torrent_only = 0_bit;
+
+	entry write_resume_data(add_torrent_params const& atp, write_resume_flags flags)
 	{
 		entry ret;
+
+		if (atp.ti)
+		{
+			auto const info = atp.ti->info_section();
+			ret["info"].preformatted().assign(info.data(), info.data() + info.size());
+			if (!atp.ti->comment().empty())
+				ret["comment"] = atp.ti->comment();
+			if (atp.ti->creation_date() != 0)
+				ret["creation date"] = atp.ti->creation_date();
+			if (!atp.ti->creator().empty())
+				ret["created by"] = atp.ti->creator();
+		}
+
+		entry::list_type ret_trees;
+		if (!atp.merkle_trees.empty())
+		{
+			auto& trees = atp.merkle_trees;
+			ret_trees.reserve(atp.merkle_trees.size());
+			entry::dictionary_type piece_layers;
+			for (file_index_t f(0); f < file_index_t{int(atp.merkle_trees.size())}; ++f)
+			{
+				auto const& tree = trees[f];
+				ret_trees.emplace_back(entry::dictionary_t);
+				auto& ret_dict = ret_trees.back().dict();
+				auto& ret_tree = ret_dict["hashes"].string();
+
+				ret_tree.reserve(tree.size() * 32);
+				for (auto const& n : tree)
+					ret_tree.append(n.data(), n.size());
+
+				if (f < atp.verified_leaf_hashes.end_index())
+				{
+					auto const& verified = atp.verified_leaf_hashes[f];
+					if (!verified.empty())
+					{
+						auto& ret_verified = ret_dict["verified"].string();
+						ret_verified.reserve(verified.size());
+						for (auto const bit : verified)
+							ret_verified.push_back(bit ? '1' : '0');
+					}
+				}
+
+				if (f < atp.merkle_tree_mask.end_index())
+				{
+					auto const& mask = atp.merkle_tree_mask[f];
+					if (!mask.empty())
+					{
+						auto& ret_mask = ret_dict["mask"].string();
+						ret_mask.reserve(mask.size());
+						for (auto const bit : mask)
+							ret_mask.push_back(bit ? '1' : '0');
+					}
+				}
+
+				if (atp.ti)
+				{
+					file_storage const& fs = atp.ti->files();
+					if (!fs.pad_file_at(f) && fs.file_size(f) > fs.piece_length())
+					{
+						aux::merkle_tree t(fs.file_num_blocks(f)
+							, fs.piece_length() / default_block_size, fs.root_ptr(f));
+
+						if (f < atp.merkle_tree_mask.end_index() && !atp.merkle_tree_mask[f].empty())
+						{
+							t.load_sparse_tree(tree, atp.merkle_tree_mask[f]);
+						}
+						else
+						{
+							t.load_tree(tree);
+						}
+
+						auto const piece_layer = t.get_piece_layer();
+						auto& layer = piece_layers[t.root().to_string()].string();
+
+						for (auto const& h : piece_layer)
+						{
+							layer += h.to_string();
+						}
+					}
+				}
+			}
+
+			if (!piece_layers.empty())
+			{
+				ret["piece layers"] = piece_layers;
+			}
+		}
+
+		// save web seeds
+		if (!atp.url_seeds.empty())
+		{
+			entry::list_type& url_list = ret["url-list"].list();
+			std::copy(atp.url_seeds.begin(), atp.url_seeds.end(), std::back_inserter(url_list));
+		}
+
+		if (!atp.http_seeds.empty())
+		{
+			entry::list_type& httpseeds_list = ret["httpseeds"].list();
+			std::copy(atp.http_seeds.begin(), atp.http_seeds.end(), std::back_inserter(httpseeds_list));
+		}
+
+		if (!atp.name.empty()) ret["name"] = atp.name;
+
+		// save trackers
+		if (!atp.trackers.empty())
+		{
+			if (atp.trackers.size() == 1)
+			{
+				ret["announce"] = atp.trackers.front();
+			}
+			else
+			{
+				entry::list_type& tr_list = ret["announce-list"].list();
+				tr_list.emplace_back(entry::list_type());
+				std::size_t tier = 0;
+				auto tier_it = atp.tracker_tiers.begin();
+				for (std::string const& tr : atp.trackers)
+				{
+					if (tier_it != atp.tracker_tiers.end())
+						tier = aux::clamp(std::size_t(*tier_it++), std::size_t{0}, std::size_t{1024});
+
+					if (tr_list.size() <= tier)
+						tr_list.resize(tier + 1);
+
+					tr_list[tier].list().emplace_back(tr);
+				}
+			}
+		}
+
+		if (flags & write_torrent_only) return ret;
+
+		if (!atp.merkle_trees.empty())
+			ret["trees"] = ret_trees;
+
+		if (atp.trackers.empty())
+			ret["trackers"].list();
+		else if (atp.trackers.size() == 1)
+			ret["trackers"] = ret["announce"];
+		else
+			ret["trackers"] = ret["announce-list"];
 
 		using namespace libtorrent::aux; // for write_*_endpoint()
 		ret["file-format"] = "libtorrent resume file";
@@ -93,8 +240,6 @@ namespace libtorrent {
 
 		ret["save_path"] = atp.save_path;
 
-		if (!atp.name.empty()) ret["name"] = atp.name;
-
 #if TORRENT_ABI_VERSION == 1
 		// deprecated in 1.2
 		if (!atp.url.empty()) ret["url"] = atp.url;
@@ -102,60 +247,6 @@ namespace libtorrent {
 
 		ret["info-hash"] = atp.info_hashes.v1;
 		ret["info-hash2"] = atp.info_hashes.v2;
-
-		if (atp.ti)
-		{
-			auto const info = atp.ti->info_section();
-			ret["info"].preformatted().assign(info.data(), info.data() + info.size());
-			if (!atp.ti->comment().empty())
-				ret["comment"] = atp.ti->comment();
-			if (atp.ti->creation_date() != 0)
-				ret["creation date"] = atp.ti->creation_date();
-			if (!atp.ti->creator().empty())
-				ret["created by"] = atp.ti->creator();
-		}
-
-		if (!atp.merkle_trees.empty())
-		{
-			auto& trees = atp.merkle_trees;
-			auto& ret_trees = ret["trees"].list();
-			ret_trees.reserve(atp.merkle_trees.size());
-			for (file_index_t f(0); f < file_index_t{int(atp.merkle_trees.size())}; ++f)
-			{
-				auto const& tree = trees[f];
-				ret_trees.emplace_back(entry::dictionary_t);
-				auto& ret_dict = ret_trees.back().dict();
-				auto& ret_tree = ret_dict["hashes"].string();
-
-				ret_tree.reserve(tree.size() * 32);
-				for (auto const& n : tree)
-					ret_tree.append(n.data(), n.size());
-
-				if (f < atp.verified_leaf_hashes.end_index())
-				{
-					auto const& verified = atp.verified_leaf_hashes[f];
-					if (!verified.empty())
-					{
-						auto& ret_verified = ret_dict["verified"].string();
-						ret_verified.reserve(verified.size());
-						for (auto const bit : verified)
-							ret_verified.push_back(bit ? '1' : '0');
-					}
-				}
-
-				if (f < atp.merkle_tree_mask.end_index())
-				{
-					auto const& mask = atp.merkle_tree_mask[f];
-					if (!mask.empty())
-					{
-						auto& ret_mask = ret_dict["mask"].string();
-						ret_mask.reserve(mask.size());
-						for (auto const bit : mask)
-							ret_mask.push_back(bit ? '1' : '0');
-					}
-				}
-			}
-		}
 
 		if (!atp.unfinished_pieces.empty())
 		{
@@ -174,32 +265,6 @@ namespace libtorrent {
 				up.push_back(std::move(piece_struct));
 			}
 		}
-
-		// save trackers
-		entry::list_type& tr_list = ret["trackers"].list();
-		if (!atp.trackers.empty())
-		{
-			tr_list.emplace_back(entry::list_type());
-			std::size_t tier = 0;
-			auto tier_it = atp.tracker_tiers.begin();
-			for (std::string const& tr : atp.trackers)
-			{
-				if (tier_it != atp.tracker_tiers.end())
-					tier = aux::clamp(std::size_t(*tier_it++), std::size_t{0}, std::size_t{1024});
-
-				if (tr_list.size() <= tier)
-					tr_list.resize(tier + 1);
-
-				tr_list[tier].list().emplace_back(tr);
-			}
-		}
-
-		// save web seeds
-		entry::list_type& url_list = ret["url-list"].list();
-		std::copy(atp.url_seeds.begin(), atp.url_seeds.end(), std::back_inserter(url_list));
-
-		entry::list_type& httpseeds_list = ret["httpseeds"].list();
-		std::copy(atp.http_seeds.begin(), atp.http_seeds.end(), std::back_inserter(httpseeds_list));
 
 		// write have bitmask
 		entry::string_type& pieces = ret["pieces"].string();
@@ -283,6 +348,17 @@ namespace libtorrent {
 		}
 
 		return ret;
+	}
+}
+
+	entry write_resume_data(add_torrent_params const& atp)
+	{
+		return write_resume_data(atp, {});
+	}
+
+	entry write_torrent_file(add_torrent_params const& atp)
+	{
+		return write_resume_data(atp, write_torrent_only);
 	}
 
 	std::vector<char> write_resume_data_buf(add_torrent_params const& atp)

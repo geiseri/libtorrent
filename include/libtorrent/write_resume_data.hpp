@@ -38,6 +38,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "libtorrent/fwd.hpp"
 #include "libtorrent/aux_/export.hpp"
 #include "libtorrent/bencode.hpp"
+#include "libtorrent/flags.hpp"
 
 namespace libtorrent {
 
@@ -45,6 +46,9 @@ namespace libtorrent {
 	// into a bencoded structure
 	TORRENT_EXPORT entry write_resume_data(add_torrent_params const& atp);
 	TORRENT_EXPORT std::vector<char> write_resume_data_buf(add_torrent_params const& atp);
+
+	// writes only the fields to create a .torrent file
+	TORRENT_EXPORT entry write_torrent_file(add_torrent_params const& atp);
 }
 
 #endif
