@@ -1446,7 +1446,7 @@ namespace {
 	{
 		std::map<sha256_hash, string_view> piece_layers;
 
-		if (!e || e.type() != bdecode_node::dict_t)
+		if (e.type() != bdecode_node::dict_t)
 		{
 			ec = errors::torrent_missing_piece_layer;
 			return false;
@@ -1576,11 +1576,19 @@ namespace {
 		if (!parse_info_section(info, ec, piece_limit)) return false;
 		resolve_duplicate_filenames();
 
-		if (m_info_hash.has_v2() && !parse_piece_layers(torrent_file.dict_find_dict("piece layers"), ec))
+		if (m_info_hash.has_v2())
 		{
-			// mark the torrent as invalid
-			m_files.set_piece_length(0);
-			return false;
+			// allow torrent files without piece layers, just like we allow magnet
+			// links. However, if there are piece layers, make sure they're
+			// valid
+			bdecode_node const& e = torrent_file.dict_find_dict("piece layers");
+			if (e && !parse_piece_layers(e, ec))
+			{
+				TORRENT_ASSERT(ec);
+				// mark the torrent as invalid
+				m_files.set_piece_length(0);
+				return false;
+			}
 		}
 
 #ifndef TORRENT_DISABLE_MUTABLE_TORRENTS
