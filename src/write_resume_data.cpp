@@ -109,7 +109,7 @@ namespace {
 					}
 				}
 
-				if (atp.ti)
+				if ((flags & write_torrent_only) && atp.ti)
 				{
 					file_storage const& fs = atp.ti->files();
 					if (!fs.pad_file_at(f) && fs.file_size(f) > fs.piece_length())
