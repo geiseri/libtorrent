@@ -1344,8 +1344,6 @@ TORRENT_TEST(write_torrent_file_roundtrip)
 	entry e = write_torrent_file(static_cast<save_resume_data_alert const*>(a)->params);
 	std::vector<char> out_buffer;
 	bencode(std::back_inserter(out_buffer), e);
-	std::ofstream f("/Users/arvid/test-ouput.torrent");
-	f.write(out_buffer.data(), out_buffer.size());
 
 	TEST_EQUAL(out_buffer, data);
 }
