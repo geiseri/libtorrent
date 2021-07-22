@@ -184,7 +184,11 @@ namespace {
 			}
 		}
 
+		// .torrent file fields above
+
 		if (flags & write_torrent_only) return ret;
+
+		// resume data below
 
 		if (!atp.merkle_trees.empty())
 			ret["trees"] = ret_trees;
@@ -192,9 +196,21 @@ namespace {
 		if (atp.trackers.empty())
 			ret["trackers"].list();
 		else if (atp.trackers.size() == 1)
-			ret["trackers"] = ret["announce"];
+		{
+			entry::list_type l;
+			l.push_back(ret["announce"]);
+			ret["trackers"].list().push_back(l);
+		}
 		else
 			ret["trackers"] = ret["announce-list"];
+
+		// if we removed the web seeds, make sure to record that in the resume
+		// data
+		if (atp.url_seeds.empty())
+			ret["url-list"].list();
+
+		if (atp.http_seeds.empty())
+			ret["httpseeds"].list();
 
 		using namespace libtorrent::aux; // for write_*_endpoint()
 		ret["file-format"] = "libtorrent resume file";
