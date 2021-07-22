@@ -51,6 +51,7 @@ namespace {
 
 	// only writes fields to create a .torrent file, no other resume data
 	constexpr write_resume_flags write_torrent_only = 0_bit;
+	constexpr write_resume_flags write_resume_only = 1_bit;
 
 	entry write_resume_data(add_torrent_params const& atp, write_resume_flags flags)
 	{
@@ -109,7 +110,7 @@ namespace {
 					}
 				}
 
-				if ((flags & write_torrent_only) && atp.ti)
+				if (!(flags & write_resume_only) && atp.ti)
 				{
 					file_storage const& fs = atp.ti->files();
 					if (!fs.pad_file_at(f) && fs.file_size(f) > fs.piece_length())
@@ -159,15 +160,17 @@ namespace {
 		if (!atp.name.empty()) ret["name"] = atp.name;
 
 		// save trackers
+		entry announce_list;
 		if (!atp.trackers.empty())
 		{
-			if (atp.trackers.size() == 1)
+			if (atp.trackers.size() == 1 && !(flags & write_resume_only))
 			{
 				ret["announce"] = atp.trackers.front();
 			}
-			else
+
+			if (!(flags & write_torrent_only))
 			{
-				entry::list_type& tr_list = ret["announce-list"].list();
+				entry::list_type& tr_list = announce_list.list();
 				tr_list.emplace_back(entry::list_type());
 				std::size_t tier = 0;
 				auto tier_it = atp.tracker_tiers.begin();
@@ -182,6 +185,9 @@ namespace {
 					tr_list[tier].list().emplace_back(tr);
 				}
 			}
+
+			if (!(flags & write_resume_only) && atp.trackers.size() > 1)
+				ret["announce-list"] = announce_list;
 		}
 
 		// .torrent file fields above
@@ -195,14 +201,8 @@ namespace {
 
 		if (atp.trackers.empty())
 			ret["trackers"].list();
-		else if (atp.trackers.size() == 1)
-		{
-			entry::list_type l;
-			l.push_back(ret["announce"]);
-			ret["trackers"].list().push_back(l);
-		}
 		else
-			ret["trackers"] = ret["announce-list"];
+			ret["trackers"] = announce_list;
 
 		// if we removed the web seeds, make sure to record that in the resume
 		// data
@@ -369,7 +369,7 @@ namespace {
 
 	entry write_resume_data(add_torrent_params const& atp)
 	{
-		return write_resume_data(atp, {});
+		return write_resume_data(atp, write_resume_only);
 	}
 
 	entry write_torrent_file(add_torrent_params const& atp)
