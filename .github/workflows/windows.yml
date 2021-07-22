@@ -35,12 +35,12 @@ jobs:
       # it appears it still picks up the 64 bit DLL, and fails.
       - name: install openssl (64 bit)
         if: ${{ contains(matrix.config, 'crypto=openssl') }}
-        uses: lukka/run-vcpkg@v6
+        uses: lukka/run-vcpkg@v7
         with:
           vcpkgArguments: 'openssl'
           vcpkgTriplet: 'x64-windows'
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: 0bf3923f9fab4001c00f0f429682a0853b5749e0
+          vcpkgGitCommitId: 5568f110b509a9fd90711978a7cb76bae75bb092
 
       - name: install boost
         run: |
